@@ -9,18 +9,19 @@
 typedef struct vcf_info vcf_info;
 
 struct vcf_info {
-        char chrom[100];
-	int pos;
-	char id[20];
-	char ref[512];
-	char alt[512];
-	char qual[10];
-	char filter[512];
-	char info[5120];
-	int is_complex;
-        int dont_print;
-	int matches;
+    char chrom[200];
+    int pos;
+    char id[40];
+    char ref[4096];
+    char alt[4096];
+    char qual[20];
+    char filter[1024];
+    char *info;         // dynamic allocation for INFO
+    int is_complex;
+    int dont_print;
+    int matches;
 };
+
 
 int count_vcf(FILE *, int *);
 vcf_info *read_vcf(FILE *, char ***, int, int);
@@ -92,28 +93,25 @@ void main(int argc,char **argv)
 	remove_duplicates(vcf_lines, lines_cnt);
 	check_indels(vcf_lines, lines_cnt, deprioritise_del);
 
-	for (i=0; i<header_cnt; ++i) {
-		if (header[i] != NULL)
-			fprintf(g, "%s", header[i]);
-	}
-	for (i=0; i<lines_cnt; i++) {
-		if (!vcf_lines[i].dont_print) {
-			print_vcf_line(g, vcf_lines[i]);
-		}
-	}
-
-	fclose(f);
-	fclose(g);
-	for (i=0; i<header_cnt; ++i) {
+	// free header
+	for (i = 0; i < header_cnt; ++i) {
 		if (header[i] != NULL)
 			free(header[i]);
 	}
 	if (header != NULL)
 		free(header);
+
+	// free vcf lines
+	for (i = 0; i < lines_cnt; i++) {
+		if (vcf_lines[i].info)      // free dynamically allocated info string
+			free(vcf_lines[i].info);
+	}
 	if (vcf_lines != NULL)
 		free(vcf_lines);
+
 	printf("Finished\n");
 	exit(0);
+
 }
 /***************************************************************************************************************************/
 
@@ -138,63 +136,68 @@ int count_vcf(FILE *f, int *header_cnt)
 /***************************************************************************************************************************/
 vcf_info *read_vcf(FILE *f, char ***header, int lines_cnt, int header_cnt)
 {
-	vcf_info *tmp = NULL, *big_var = NULL;
-	int i = 0, j = 0, var_len = 0;
-	char line[MAXSTR], chrom[150],id[25],ref[515],alt[515],qual[15],filter[515],info[5130];	
+    vcf_info *tmp = NULL, *big_var = NULL;
+    int i = 0, j = 0, var_len = 0;
+    char line[MAXSTR], chrom[150], id[25], ref[4096], alt[4096], qual[20], filter[1024], info_buf[MAXSTR];
 
-	if ((*header=(char **)calloc(header_cnt, sizeof(char *)))==NULL) {
-                printf("memory allocation error in read_vcf\n");
-                exit(0);
-        }
-	if ((tmp=(vcf_info *)calloc(lines_cnt, sizeof(vcf_info)))==NULL) {
-                printf("memory allocation error in read_vcf\n");
-                exit(0);
-        }
-	
-	while(fgets(line,MAXSTR - 1,f) != NULL) {
-                if (line[0] == '#' && i < header_cnt) {
-                        if (((*header)[i]=(char *)calloc((strlen(line) + 1), sizeof(char)))==NULL) {
-                                printf("memory allocation error in read_vcf\n");
-                                exit(0);
-                        }
-                        strcpy((*header)[i], line);
-                        i++;
-                }
-		else if (j < lines_cnt) {
-			chrom[0] = id[0] = ref[0] = alt[0] = qual[0] = filter[0] = info[0] = '\0';
-			sscanf(line, "%[^\t] %d %[^\t] %[^\t] %[^\t] %s %s %s", chrom, &tmp[j].pos, id, ref, alt, qual, filter, info);
-			if (strlen(chrom) > 99 || strlen(id) > 19 || strlen(ref) > 511 || strlen(alt) > 511 || 
-					strlen(qual) > 9 || strlen(filter) > 511 || strlen(info) > 5119) {
-				printf("Content of one of the vcf fields is too big for the array specified in vcf_info structure. Please check your vcf, increase the size of the appropriate array and try again.\n");
-				exit(0);
-			}
-			strcpy(tmp[j].chrom,chrom);
-			strcpy(tmp[j].id,id);
-			strcpy(tmp[j].ref,ref);
-			strcpy(tmp[j].alt,alt);
-			strcpy(tmp[j].qual,qual);
-			strcpy(tmp[j].filter,filter);
-			strcpy(tmp[j].info,info);
+    // allocate header
+    *header = (char **)calloc(header_cnt, sizeof(char *));
+    tmp = (vcf_info *)calloc(lines_cnt, sizeof(vcf_info));
 
-			if (strlen(tmp[j].ref) > var_len) {
-				var_len = strlen(tmp[j].ref);
-				big_var = &tmp[j];
-			}
-			if (strlen(tmp[j].alt) > var_len) {
-				var_len = strlen(tmp[j].alt);
-				big_var = &tmp[j];
-			}
-			j++;
-		}
-		else {
-			printf("Not enough lines in vcf_lines\n");
-			exit(0);
-		}
-	}
-	printf("biggest variant is %d:\n", var_len);
-	printf("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", big_var->chrom, big_var->pos, big_var->id, big_var->ref, big_var->alt, big_var->qual, big_var->filter, big_var->info);
-	
-	return tmp;
+    if (!(*header) || !tmp) {
+        fprintf(stderr, "Memory allocation error in read_vcf\n");
+        exit(1);
+    }
+
+    while (fgets(line, MAXSTR - 1, f)) {
+        if (line[0] == '#' && i < header_cnt) {
+            (*header)[i] = strdup(line);
+            if (!(*header)[i]) {
+                fprintf(stderr, "Memory allocation error for header\n");
+                exit(1);
+            }
+            i++;
+        }
+        else if (j < lines_cnt) {
+            chrom[0] = id[0] = ref[0] = alt[0] = qual[0] = filter[0] = info_buf[0] = '\0';
+
+            sscanf(line, "%[^\t] %d %[^\t] %[^\t] %[^\t] %s %s %[^\n]",
+                   chrom, &tmp[j].pos, id, ref, alt, qual, filter, info_buf);
+
+            strcpy(tmp[j].chrom, chrom);
+            strcpy(tmp[j].id, id);
+            strcpy(tmp[j].ref, ref);
+            strcpy(tmp[j].alt, alt);
+            strcpy(tmp[j].qual, qual);
+            strcpy(tmp[j].filter, filter);
+
+            // dynamically allocate info string
+            tmp[j].info = strdup(info_buf);
+            if (!tmp[j].info) {
+                fprintf(stderr, "Memory allocation error for info field\n");
+                exit(1);
+            }
+
+            // track largest variant (optional)
+            if ((int)strlen(tmp[j].ref) > var_len) {
+                var_len = strlen(tmp[j].ref);
+                big_var = &tmp[j];
+            }
+            if ((int)strlen(tmp[j].alt) > var_len) {
+                var_len = strlen(tmp[j].alt);
+                big_var = &tmp[j];
+            }
+
+            j++;
+        }
+    }
+
+    printf("biggest variant length = %d\n", var_len);
+    printf("%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n",
+           big_var->chrom, big_var->pos, big_var->id, big_var->ref, big_var->alt,
+           big_var->qual, big_var->filter, big_var->info);
+
+    return tmp;
 }
 /***************************************************************************************************************************/
 
