@@ -6,9 +6,7 @@
 #include <unistd.h>
 #include <math.h>
 #include <curl/curl.h>
-#include </home/kate/Downloads/cJSON/cJSON-master/cJSON.h>
-// Download cJSON, update the filepath below to point to the correct folder and uncomment the line
-/*#include </path/to/cJSON.h>*/
+#include "cJSON.h"
 
 #define MAXSTR 51200
 #define MAXSEQLEN 350000
